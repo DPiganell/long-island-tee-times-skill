@@ -51,15 +51,29 @@ COURSES = [
     ("Bethpage Green",                "ForeUp"),
     ("Bethpage Yellow",               "ForeUp"),
     ("Sunken Meadow State Park",      "ForeUp"),
-    # TeeItUp
+    # TeeItUp — dedicated single-course aliases
     ("Middle Island Country Club",    "TeeItUp"),
     ("Smithtown Landing CC",          "TeeItUp"),
     ("Stonebridge Golf Links",        "TeeItUp"),
+    ("Wind Watch Golf & Country Club", "TeeItUp"),
+    ("Cherry Creek Golf Links",       "TeeItUp"),
+    ("The Woods at Cherry Creek",     "TeeItUp"),
+    # TeeItUp — NYC city courses on the shared "golf-nyc" alias
+    ("Douglaston Golf Course",        "TeeItUp"),
+    ("Clearview Park Golf Course",    "TeeItUp"),
+    ("Kissena Golf Course",           "TeeItUp"),
+    ("Forest Park Golf Course",       "TeeItUp"),
+    ("Van Cortlandt Golf Course",     "TeeItUp"),
+    ("Silver Lake Golf Course",       "TeeItUp"),
+    ("South Shore Golf Course",       "TeeItUp"),
+    ("La Tourette Golf Course",       "TeeItUp"),
     # Chronogolf (anonymous)
     ("Swan Lake Golf Club",           "Chronogolf"),
     ("Spy Ring Golf Club",            "Chronogolf"),
     ("Port Jefferson Country Club",   "Chronogolf"),
     ("Pine Hills Country Club",       "Chronogolf"),
+    # GolfBack (anonymous POST API)
+    ("Willow Creek Golf Club",        "GolfBack"),
     # WebTrac (requires Suffolk County credentials)
     ("Bergen Point Golf Club",        "WebTrac"),
     ("Indian Island Country Club",    "WebTrac"),
@@ -67,7 +81,7 @@ COURSES = [
     ("Timber Point Blue",             "WebTrac"),
     ("Timber Point White (9)",        "WebTrac"),
     ("West Sayville Golf Course",     "WebTrac"),
-    # Club Caddie (nav-then-intercept; usually link fallback)
+    # Club Caddie (direct webapi handshake — session bootstrap + TeeTimes POST)
     ("Spring Lake Golf Club",         "Club Caddie"),
 ]
 

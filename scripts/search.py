@@ -21,18 +21,32 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 EDT = timezone(timedelta(hours=-4))  # Eastern Daylight Time (May–Nov)
 
-# Use system CA bundle — Python's bundled cert store on macOS is often stale
-_CA_CANDIDATES = [
-    "/etc/ssl/cert.pem",
-    "/opt/homebrew/etc/openssl@3/cert.pem",
-    "/usr/local/etc/openssl/cert.pem",
-]
-_CA_FILE = next((p for p in _CA_CANDIDATES if os.path.exists(p)), None)
+# CA bundle resolution. Prefer the certifi Mozilla bundle when available — it
+# stays current with newer roots (e.g. Sectigo Public Server Auth Root R46, which
+# api.golfback.com chains through) that the macOS system bundle at /etc/ssl/cert.pem
+# can lack. Fall back to common system locations otherwise. certifi is a superset of
+# the public roots, so this is strictly safer for every strategy.
+def _resolve_ca_file():
+    try:
+        import certifi
+        return certifi.where()
+    except ImportError:
+        pass
+    for p in (
+        "/etc/ssl/cert.pem",
+        "/opt/homebrew/etc/openssl@3/cert.pem",
+        "/usr/local/etc/openssl/cert.pem",
+    ):
+        if os.path.exists(p):
+            return p
+    return None
+
+_CA_FILE = _resolve_ca_file()
 
 
 def _ssl_ctx() -> ssl.SSLContext:
@@ -46,7 +60,9 @@ ZIP_CODE = "11755"
 # Strategies:
 #   "foreup"     — public ForeUp API (no auth needed)
 #   "teeitup"    — public TeeItUp/Kenna API (x-be-alias header)
-#   "chronogolf" — Chronogolf (Lightspeed); Playwright + stored session cookie
+#   "chronogolf" — Chronogolf (Lightspeed) public marketplace API (anonymous HTTP)
+#   "golfback"   — public GolfBack API (POST, no auth needed)
+#   "clubcaddie_api" — Club Caddie direct webapi handshake (no auth, no browser)
 #   "clubcaddie" — Club Caddie SPA; Playwright + response interception (auto-headless)
 COURSES = [
     # --- ForeUp (Town of Huntington / Town of Islip / NYS Parks) ------------
@@ -72,6 +88,50 @@ COURSES = [
     {"name": "Stonebridge Golf Links", "strategy": "teeitup",
      "alias": "stonebridge-golf-links-and-country-club",
      "booking_url": "https://stonebridge-golf-links-and-country-club.book.teeitup.golf"},
+    {"name": "Wind Watch Golf & Country Club", "strategy": "teeitup",
+     "alias": "wind-watch-golf-and-country-club",
+     "booking_url": "https://wind-watch-golf-and-country-club.book.teeitup.com",
+     "note": "Hauppauge · Invited (ClubCorp) semi-private · upscale, thin public inventory"},
+    # Cherry Creek Golf Club (Riverhead) — two separate TeeItUp aliases, one per
+    # sister course. Each alias serves exactly one facility (no facility_id filter).
+    {"name": "Cherry Creek Golf Links", "strategy": "teeitup",
+     "alias": "cherry-creek-golf-links",
+     "booking_url": "https://cherry-creek-golf-links.book.teeitup.golf",
+     "note": "Riverhead · par-73, ~7,200 yds — one of NY's top public layouts"},
+    {"name": "The Woods at Cherry Creek", "strategy": "teeitup",
+     "alias": "the-woods-at-cherry-creek",
+     "booking_url": "https://the-woods-at-cherry-creek.book.teeitup.golf",
+     "note": "Riverhead · sister par-71 to the Links — shorter, water/woodland"},
+
+    # --- NYC city courses (GolfNYC) — all under the shared "golf-nyc" TeeItUp alias.
+    # One alias serves 9 courses; `facility_id` (GolfNow id) filters to each one and
+    # also forms the booking deep-link (?course=<facility_id>). NYC courses don't
+    # expose price in the API (resident/non-resident rates paid at course → "—").
+    # Closest meet-in-the-middle for a city friend + a Smithtown drive: the Queens four.
+    {"name": "Douglaston Golf Course", "strategy": "teeitup", "alias": "golf-nyc",
+     "facility_id": "5044", "booking_url": "https://golf-nyc.book.teeitup.com/teetimes?course=5044",
+     "note": "Queens (Little Neck) · off the LIE/Cross Island"},
+    {"name": "Clearview Park Golf Course", "strategy": "teeitup", "alias": "golf-nyc",
+     "facility_id": "4047", "booking_url": "https://golf-nyc.book.teeitup.com/teetimes?course=4047",
+     "note": "Queens (Bayside) · foot of the Throgs Neck Bridge"},
+    {"name": "Kissena Golf Course", "strategy": "teeitup", "alias": "golf-nyc",
+     "facility_id": "5046", "booking_url": "https://golf-nyc.book.teeitup.com/teetimes?course=5046",
+     "note": "Queens (Flushing) · short par-64"},
+    {"name": "Forest Park Golf Course", "strategy": "teeitup", "alias": "golf-nyc",
+     "facility_id": "5045", "booking_url": "https://golf-nyc.book.teeitup.com/teetimes?course=5045",
+     "note": "Queens (Woodhaven)"},
+    {"name": "Van Cortlandt Golf Course", "strategy": "teeitup", "alias": "golf-nyc",
+     "facility_id": "5043", "booking_url": "https://golf-nyc.book.teeitup.com/teetimes?course=5043",
+     "note": "Bronx · oldest public course in the US"},
+    {"name": "Silver Lake Golf Course", "strategy": "teeitup", "alias": "golf-nyc",
+     "facility_id": "4757", "booking_url": "https://golf-nyc.book.teeitup.com/teetimes?course=4757",
+     "note": "Staten Island"},
+    {"name": "South Shore Golf Course", "strategy": "teeitup", "alias": "golf-nyc",
+     "facility_id": "4051", "booking_url": "https://golf-nyc.book.teeitup.com/teetimes?course=4051",
+     "note": "Staten Island"},
+    {"name": "La Tourette Golf Course", "strategy": "teeitup", "alias": "golf-nyc",
+     "facility_id": "4049", "booking_url": "https://golf-nyc.book.teeitup.com/teetimes?course=4049",
+     "note": "Staten Island"},
 
     # --- Chronogolf (Lightspeed) — anonymous HTTP, no auth needed ----------
     # Use COURSE UUIDs (from club.courses[].uuid in the club page __NEXT_DATA__),
@@ -101,6 +161,15 @@ COURSES = [
      "url": "https://www.chronogolf.com/club/pine-hills-country-club-new-york/teetimes",
      "note": "Manorville · 18 holes"},
 
+    # --- GolfBack — public POST API, no auth needed --------------------------
+    # Endpoint: POST api.golfback.com/api/v1/courses/{course_id}/date/{YYYY-MM-DD}/teetimes
+    # with body {}. `course_id` is the UUID from the golfback.com/course/<uuid> URL.
+    # Willow Creek moved off Chronogolf (stale "closed" listing) to GolfBack.
+    {"name": "Willow Creek Golf Club",     "strategy": "golfback",
+     "course_id": "3ac7c8dc-1b2b-4da8-9cf3-c874f999358e",
+     "url": "https://golfback.com/course/3ac7c8dc-1b2b-4da8-9cf3-c874f999358e",
+     "note": "Mt. Sinai · Invited (ClubCorp) semi-private · 2-some minimum, premium pricing"},
+
     # --- Suffolk County WebTrac — Playwright + Green Key login ----------------
     # `secondarycode` is the WebTrac course filter value.
     # All 4 facilities share one login session — main() batches them together.
@@ -124,16 +193,22 @@ COURSES = [
      "secondarycode": "6",
      "note": "West Sayville · Suffolk County"},
 
-    # --- Club Caddie — Playwright nav from course site, then intercept --------
-    # Spring Lake's Club Caddie URLs are session-rotated. Strategy: load the
-    # course's own tee-times page, click the booking link, then intercept the
-    # API call the resulting SPA makes. Marked "speculative" — may degrade
-    # to link-only if Club Caddie still 404s after navigation.
-    {"name": "Spring Lake Golf Club",      "strategy": "clubcaddie_nav",
+    # --- Club Caddie — direct webapi handshake (Spring Lake) -----------------
+    # Bootstrap a session at /webapi/view/{apikey}/slots (Session-Id header), then
+    # POST the search form to /webapi/TeeTimes — returns HTML with URL-encoded JSON
+    # slot blobs. No browser needed. apikey + cc_course_id come from the public
+    # booking page (apikey is in the URL; CourseId is a hidden <input>). The old
+    # `clubcaddie_nav` (Playwright) strategy stays available as a fallback — switch
+    # `strategy` back to it (and keep `url`/`intercept_patterns`) if these rotate.
+    {"name": "Spring Lake Golf Club",      "strategy": "clubcaddie_api",
+     "cc_host": "https://apimanager-cc37.clubcaddie.com",
+     "apikey": "ijfdabab",
+     "cc_course_id": "103499",
+     "booking_url": "https://apimanager-cc37.clubcaddie.com/webapi/view/ijfdabab/slots",
      "url": "https://springlakegolfclub.com/golf/tee-times",
      "platform": "Club Caddie",
      "intercept_patterns": ["apirest", "clubcaddie.com", "teetime"],
-     "note": "Middle Island · Championship public course"},
+     "note": "Middle Island · 27-hole championship public (Thunderbird / Sandpiper / Dogwood)"},
 ]
 
 BROWSER_HEADERS = {
@@ -305,10 +380,23 @@ def search_link_only(course: dict, date_str: str, start_h: int, end_h: int, play
 def search_teeitup(course: dict, date_str: str, start_h: int, end_h: int, players: int) -> list[dict]:
     """Query TeeItUp's Kenna API for available tee times."""
     url = f"https://phx-api-be-east-1b.kenna.io/v2/tee-times?date={date_str}"
+    # Multi-course aliases (e.g. "golf-nyc" covering all NYC city courses) serve many
+    # courses under one alias. `facility_id` is the course's GolfNow facility id, used
+    # both to filter the API and to deep-link the booking page (?course=<facility_id>).
+    if course.get("facility_id"):
+        url += f"&facilityIds={course['facility_id']}&returnPromotedRates=true"
+    # Origin must match the real booking host. Single-course aliases live on
+    # *.book.teeitup.golf; multi-course ones (golf-nyc) on *.book.teeitup.com.
+    booking_url = course.get("booking_url", "")
+    if booking_url:
+        parts = urlsplit(booking_url)
+        origin = f"{parts.scheme}://{parts.netloc}"
+    else:
+        origin = f"https://{course['alias']}.book.teeitup.golf"
     req = Request(url, headers={
         **BROWSER_HEADERS,
         "Accept": "application/json",
-        "Origin": f"https://{course['alias']}.book.teeitup.golf",
+        "Origin": origin,
         "x-be-alias": course["alias"],
     })
     try:
@@ -495,6 +583,121 @@ def search_chronogolf(course: dict, date_str: str, start_h: int, end_h: int, pla
             course["name"], "Chronogolf", course["url"],
             f"No times in window (course has {len(teetimes)} slot{'s' if len(teetimes) != 1 else ''} at other times)",
         )]
+    return results
+
+
+# ---------------------------------------------------------------------------
+# GolfBack — public POST API, no auth needed
+# ---------------------------------------------------------------------------
+
+def search_golfback(course: dict, date_str: str, start_h: int, end_h: int, players: int) -> list[dict]:
+    """
+    Fetch tee times from GolfBack's public API.
+    Endpoint: POST https://api.golfback.com/api/v1/courses/{course_id}/date/{YYYY-MM-DD}/teetimes
+    Body {} works anonymously (the real client posts {sessionId}, null when logged out).
+
+    Each teetime object:
+      id: UUID                         # for the booking deep-link
+      localDateTime: "2026-06-06T07:12:00"  # already local time, no tz suffix
+      isAvailable: bool
+      playersMin / playersMax: int     # booking group-size constraints (NOT open spots)
+      rates: [{holes, hasCartIncluded, price, basePrice, name}]
+
+    Note: many courses (Willow Creek included) enforce a 2-some minimum, so a
+    1-player search can legitimately find slots in-window that nobody can solo-book.
+    """
+    course_id = course["course_id"]
+    course_url = course.get("url", f"https://golfback.com/course/{course_id}")
+    api_url = f"https://api.golfback.com/api/v1/courses/{course_id}/date/{date_str}/teetimes"
+    req = Request(api_url, data=b"{}", method="POST", headers={
+        **BROWSER_HEADERS,
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Origin": "https://golfback.com",
+        "Referer": "https://golfback.com/",
+    })
+
+    try:
+        with urlopen(req, timeout=12, context=_ssl_ctx()) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except HTTPError as e:
+        return [_error_entry(course["name"], "GolfBack", f"HTTP {e.code}")]
+    except (URLError, json.JSONDecodeError) as e:
+        return [_error_entry(course["name"], "GolfBack", str(e))]
+
+    teetimes = data.get("data", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+
+    results = []
+    in_window = 0        # slots whose time lands in [start_h, end_h)
+    min_required = None  # smallest playersMin among in-window slots
+    for slot in teetimes:
+        if slot.get("isAvailable") is False:
+            continue
+
+        # Time — localDateTime is already local (no tz); filter by window
+        local = slot.get("localDateTime", "")
+        try:
+            dt = datetime.fromisoformat(local)
+        except (ValueError, TypeError):
+            continue
+        if dt.hour < start_h or dt.hour >= end_h:
+            continue
+        in_window += 1
+        time_str = dt.strftime("%H:%M")
+
+        # Group-size constraint — playersMin/Max define the bookable range
+        pmin = slot.get("playersMin")
+        pmax = slot.get("playersMax")
+        if pmin is not None:
+            min_required = pmin if min_required is None else min(min_required, pmin)
+        if players:
+            if pmin is not None and players < pmin:
+                continue
+            if pmax is not None and players > pmax:
+                continue
+
+        # Price / holes — prefer the 18-hole rate, else the first rate
+        rates = slot.get("rates") or []
+        rate = next((r for r in rates if r.get("holes") == 18), rates[0] if rates else None)
+        if rate:
+            holes = rate.get("holes", 18)
+            try:
+                amount = float(rate.get("price") or rate.get("basePrice") or 0)
+            except (ValueError, TypeError):
+                amount = 0
+            if amount > 0:
+                price = f"${amount:.0f}" + (" w/cart" if rate.get("hasCartIncluded") else "")
+            else:
+                price = "—"
+        else:
+            hv = slot.get("holes")
+            holes = hv[0] if isinstance(hv, list) and hv else (hv or 18)
+            price = "—"
+
+        slot_id = slot.get("id", "")
+        book_url = (
+            f"https://golfback.com/course/{course_id}/date/{date_str}/teetime/{slot_id}"
+            if slot_id else course_url
+        )
+        results.append({
+            "time": time_str,
+            "course": course["name"],
+            "holes": holes,
+            "price": price,
+            "available_spots": pmax if pmax is not None else "?",
+            "source": "GolfBack",
+            "booking_url": book_url,
+        })
+
+    if not results:
+        # Distinguish "nothing in window" from "in window but group-size too small"
+        if in_window and min_required and players and players < min_required:
+            detail = (f"{in_window} slot{'s' if in_window != 1 else ''} in window, but none allow "
+                      f"{players}-player bookings (min {min_required}-some)")
+        else:
+            total = len(teetimes)
+            detail = f"No times in window (course has {total} slot{'s' if total != 1 else ''} on other times)"
+        return [_no_availability_entry(course["name"], "GolfBack", course_url, detail)]
     return results
 
 
@@ -842,7 +1045,138 @@ def _parse_webtrac_row(raw: str, course: dict, booking_url: str,
 
 
 # ---------------------------------------------------------------------------
-# Club Caddie via navigation (Spring Lake)
+# Club Caddie — direct webapi handshake (Spring Lake)
+# ---------------------------------------------------------------------------
+# The booking SPA at /webapi/view/{apikey}/slots bootstraps a session (returned
+# in the Session-Id response header), then POSTs the search form to
+# /webapi/TeeTimes, which replies with an HTML fragment. Each tee time is
+# embedded as a URL-encoded JSON object in a row attribute. We reproduce that
+# handshake over plain HTTP — far more reliable than driving the SPA headless
+# (see `search_clubcaddie_nav` below, kept as a fallback). The session is
+# validated purely by echoing it back as the `Interaction` param; no cookie jar
+# is needed. Required course fields: cc_host, apikey, cc_course_id, booking_url.
+
+def _to_clubcaddie_date(date_str: str) -> str:
+    """YYYY-MM-DD -> MM/DD/YYYY (Club Caddie form format)."""
+    y, m, d = date_str.split("-")
+    return f"{m}/{d}/{y}"
+
+
+def search_clubcaddie_api(
+    course: dict, date_str: str, start_h: int, end_h: int, players: int
+) -> list[dict]:
+    host = course["cc_host"].rstrip("/")
+    apikey = course["apikey"]
+    cc_date = _to_clubcaddie_date(date_str)
+
+    # 1) Bootstrap a session — the SPA stores this Session-Id and echoes it back
+    #    as the `Interaction` param on every subsequent data call.
+    boot_qs = urlencode({"date": cc_date, "player": players,
+                         "ratetype": "any", "SetSessionIdInLocalStorage": "true"})
+    boot_url = f"{host}/webapi/view/{apikey}/slots?{boot_qs}"
+    try:
+        with urlopen(Request(boot_url, headers=BROWSER_HEADERS),
+                     timeout=15, context=_ssl_ctx()) as resp:
+            session_id = resp.headers.get("Session-Id")
+    except (HTTPError, URLError) as e:
+        return [_error_entry(course["name"], "Club Caddie", f"session bootstrap failed: {e}")]
+    if not session_id:
+        return [_error_entry(course["name"], "Club Caddie", "no Session-Id returned by bootstrap")]
+
+    # 2) POST the search form. fromtime/totime are server-side hour filters; we
+    #    request the full day (4–23) and filter to the window in Python, matching
+    #    every other strategy.
+    body = urlencode({
+        "date": cc_date, "player": players, "holes": "any",
+        "fromtime": 4, "totime": 23, "minprice": 0, "maxprice": 9999,
+        "ratetype": "", "HoleGroup": "all",
+        "CourseId": course["cc_course_id"], "apikey": apikey,
+        "Interaction": session_id,
+    }).encode()
+    req = Request(f"{host}/webapi/TeeTimes", data=body, headers={
+        **BROWSER_HEADERS,
+        "X-Requested-With": "XMLHttpRequest",
+        "Content-Type": "application/x-www-form-urlencoded",
+    })
+    try:
+        with urlopen(req, timeout=20, context=_ssl_ctx()) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except (HTTPError, URLError) as e:
+        return [_error_entry(course["name"], "Club Caddie", f"TeeTimes request failed: {e}")]
+
+    # Booking link that lands the user on the right day in the public SPA.
+    book_url = f"{host}/webapi/view/{apikey}/slots?" + urlencode(
+        {"date": cc_date, "player": players, "ratetype": "any"})
+
+    # 3) Decode the URL-encoded JSON slot objects ( {"…} == %7B%22…%7D ).
+    results: list[dict] = []
+    seen: set = set()
+    total = 0
+    for blob in re.findall(r'="(%7B%22.*?%7D)"', html):
+        try:
+            slot = json.loads(unquote(blob))
+        except (ValueError, TypeError):
+            continue
+        raw_time = slot.get("StartTime", "")
+        if not raw_time:
+            continue
+        # An 18-hole rate present → 18; else a 9-hole rate → 9.
+        holes = 18 if slot.get("LowestPriceHoleRate_18") else (
+                9 if slot.get("LowestPriceHoleRate_9") else course.get("holes", 18))
+        key = (raw_time, slot.get("HoleGroup"), holes)
+        if key in seen:  # de-dupe front/back duplicate renders
+            continue
+        seen.add(key)
+        total += 1  # full-day unique count (for the "N slots on other times" note)
+
+        time_str = raw_time[:5]  # "HH:MM", already local
+        try:
+            h = int(time_str.split(":")[0])
+        except ValueError:
+            continue
+        if h < start_h or h >= end_h:
+            continue
+
+        # Group-size gates: PlayersAvailable = open spots; MinimumPlayersAvailable
+        # = booking floor (some slots are 2-some-minimum).
+        avail = slot.get("PlayersAvailable")
+        min_players = slot.get("MinimumPlayersAvailable") or 1
+        if players:
+            if isinstance(avail, int) and avail < players:
+                continue
+            if players < min_players:
+                continue
+
+        lo, hi = slot.get("LowestPrice"), slot.get("HighestPrice")
+        try:
+            if lo and hi and float(hi) > float(lo):
+                price = f"${float(lo):.0f}–${float(hi):.0f}"
+            elif lo:
+                price = f"${float(lo):.0f}"
+            else:
+                price = "—"
+        except (ValueError, TypeError):
+            price = "—"
+
+        results.append({
+            "time": time_str,
+            "course": course["name"],
+            "holes": holes,
+            "price": price,
+            "available_spots": avail if avail is not None else "?",
+            "source": "Club Caddie",
+            "booking_url": book_url,
+        })
+
+    if not results:
+        msg = (f"No times in window (course has {total} slot{'s' if total != 1 else ''} on other times)"
+               if total else "No tee times returned")
+        return [_no_availability_entry(course["name"], "Club Caddie", book_url, msg)]
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Club Caddie via navigation (Spring Lake — legacy fallback)
 # ---------------------------------------------------------------------------
 
 def search_clubcaddie_nav(
@@ -1037,6 +1371,8 @@ def main() -> None:
         "foreup":         search_foreup,
         "teeitup":        search_teeitup,
         "chronogolf":     search_chronogolf,
+        "golfback":       search_golfback,
+        "clubcaddie_api": search_clubcaddie_api,
         "clubcaddie":     search_playwright,
         "clubcaddie_nav": search_clubcaddie_nav,
         "link_only":      search_link_only,

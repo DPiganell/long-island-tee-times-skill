@@ -7,17 +7,18 @@
 | URL pattern | Platform | Strategy | What to extract |
 |-------------|----------|----------|-----------------|
 | `foreupsoftware.com/index.php/booking/F/S` | ForeUp | `foreup` | `schedule_id` from inline JS `DEFAULT_FILTER = {"schedule_id": NNN}` (the URL ID and real schedule_id often differ — e.g. Brentwood's URL is 19105 but real schedule_id is 957). For multi-course facilities, the `SCHEDULES` JS array lists every sub-schedule with its `teesheet_id` and `title`. |
-| `*.book.teeitup.golf` or `*.book.teeitup.com` | TeeItUp | `teeitup` | The subdomain IS the `alias` (e.g. `middle-island-country-club`) |
+| `*.book.teeitup.golf` or `*.book.teeitup.com` | TeeItUp | `teeitup` | The subdomain IS the `alias` (e.g. `middle-island-country-club`). For a multi-course operator (e.g. NYC's `golf-nyc`), one alias serves many courses — add a `facility_id` (GolfNow id, also the booking deep-link `?course=<id>`) to filter to each one. |
 | `chronogolf.com/club/SLUG/teetimes` | Chronogolf | `chronogolf` | Fetch the page → `<script id="__NEXT_DATA__">` → `pageProps.club.courses[].uuid` (each sub-course has its own UUID; pass all comma-separated as `course_ids`) |
+| `golfback.com/course/UUID` | GolfBack | `golfback` | The UUID is right in the URL. POST-only API (`POST api.golfback.com/api/v1/courses/{uuid}/date/{YYYY-MM-DD}/teetimes` with body `{}`), anonymous. |
+| `apimanager-*.clubcaddie.com/webapi/view/<apikey>/slots` | Club Caddie | `clubcaddie_api` | `apikey` is in the URL; `CourseId` is a hidden `<input name="CourseId">` on the booking page. No browser needed — see the Club Caddie section of `references/courses.md`. The older `clubcaddie_nav` (Playwright intercept) stays as a fallback if these rotate. |
 | `nysuffolkctyweb.myvscloud.com/webtrac` | Suffolk County | `webtrac` | The `secondarycode` value from the course dropdown on the WebTrac search form |
-| `clubcaddie.com` | Club Caddie | `clubcaddie_nav` | No clean ID — set `intercept_patterns` and let Playwright capture API responses |
 | Anything else | — | `link_only` | Just a direct URL |
 
 2. **Add an entry to `COURSES`** in `scripts/search.py` (single source of truth). Match the existing format for the strategy.
 
 3. **Add a `(name, source)` tuple** to `COURSES` in `scripts/test_search.py` so the smoke test covers it.
 
-4. **Verify:** `python3 scripts/test_search.py` — expect 24/24 OK (or more).
+4. **Verify:** `python3 scripts/test_search.py` — expect 35/35 OK (or more).
 
 5. **Update `references/courses.md`** with the new course's IDs and any platform-specific notes for future maintainers.
 
@@ -42,7 +43,7 @@ Tee time counts vary by day and time of day — that's not a regression.
 When filing an issue, please include:
 - The full test output: `python3 scripts/test_search.py -v 2>&1`
 - The date and player count you tested with
-- The platform that's misbehaving (one of: ForeUp / TeeItUp / Chronogolf / WebTrac / Club Caddie)
+- The platform that's misbehaving (one of: ForeUp / TeeItUp / Chronogolf / GolfBack / Club Caddie / WebTrac)
 - Any error message from the JSON output (`error` field)
 
 ## Style
