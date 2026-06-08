@@ -53,6 +53,11 @@ Resolve the user's natural-language input to concrete values.
 **Players:**
 - If not specified in args, ask: "How many players?"
 
+**Holes (default depends on group size):**
+- A **foursome (4 players) defaults to 18 holes** — pass `--holes 18`. A foursome wants a full round; 9-hole loops (and 9-hole-only courses) are noise.
+- For 1–3 players, default to **all holes** (omit `--holes`) unless the user says otherwise.
+- Explicit overrides always win: "9 holes" / "twilight 9" → `--holes 9`; "18" → `--holes 18`; "any holes" / "include 9" → omit the flag.
+
 **Course filter (optional):**
 - "--course Crab Meadow" or "just Crab Meadow" → pass `--course "Crab Meadow"` to the script
 - "Bethpage" → matches all 5 Bethpage courses (Black, Red, Blue, Green, Yellow)
@@ -65,8 +70,13 @@ python3 ~/.claude/skills/tee-times/scripts/search.py \
   --start HH:MM \
   --end HH:MM \
   --players N \
+  [--holes 18] \
   [--course "COURSE NAME"]
 ```
+
+`--holes 18` drops every 9-hole result (9-hole-only courses and the 9-hole loops
+of mixed courses like Spring Lake's Sandpiper or Swan Lake's back-9). Default it
+on for a foursome per Step 1.
 
 No `--headless` flag is needed — each course picks its own strategy automatically. Chronogolf courses spin up Playwright internally (~5–10s); the rest hit public APIs (~1s).
 
@@ -119,7 +129,10 @@ Want me to search a different time, filter to one course (e.g. Bethpage), or che
 → Searches tomorrow 6am–12pm for 2 players across all courses
 
 /tee-times Saturday 8am-11am 4
-→ Searches next Saturday 8–11am for 4 players
+→ Searches next Saturday 8–11am for 4 players, 18-hole only (foursome default → --holes 18)
+
+/tee-times Saturday morning 2 9 holes
+→ Searches next Saturday 6am–12pm for 2 players, 9-hole only (--holes 9)
 
 /tee-times 2026-05-16 afternoon 2 --course Bethpage
 → Searches May 16 afternoon for 2 across all 5 Bethpage courses

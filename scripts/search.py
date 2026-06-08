@@ -6,6 +6,7 @@ generates static NYS Parks links.
 
 Usage:
   python3 search.py --date 2026-05-16 --start 08:00 --end 11:00 --players 2
+  python3 search.py --date 2026-05-16 --start 08:00 --end 11:00 --players 4 --holes 18
   python3 search.py --date 2026-05-16 --start 08:00 --end 11:00 --players 2 --course "Crab Meadow"
 
 Output: JSON array of tee time objects, one per available slot.
@@ -1351,6 +1352,15 @@ def main() -> None:
         help="Filter to a specific course name (partial match, case-insensitive)",
     )
     parser.add_argument(
+        "--holes",
+        type=int,
+        choices=[9, 18],
+        default=None,
+        help="Only return tee times for this hole count (e.g. 18). "
+             "Drops 9-hole-only courses and the 9-hole loops of mixed courses. "
+             "Omit to return all holes.",
+    )
+    parser.add_argument(
         "--headless",
         action="store_true",
         help="Deprecated no-op; auto-headless is now built into per-course strategies.",
@@ -1407,6 +1417,24 @@ def main() -> None:
                 results.extend(future.result())
             except Exception as e:
                 results.append(_error_entry(futures[future], "unknown", str(e)))
+
+    # Optional hole-count filter. Real slots carry an accurate per-slot `holes`
+    # value, so we match on it directly. Errors are always surfaced. For
+    # "no availability" notes we consult each course's configured hole count:
+    # 9-hole-only courses (e.g. Spy Ring, Timber Point White) are dropped under
+    # an 18-hole filter, while mixed/18-hole courses keep their note.
+    if args.holes:
+        configured_holes = {c["name"]: c.get("holes") for c in COURSES}
+
+        def _keep_holes(e: dict) -> bool:
+            if e.get("error"):
+                return True
+            if e.get("no_availability"):
+                ch = configured_holes.get(e.get("course"))
+                return ch is None or ch == args.holes
+            return e.get("holes") == args.holes
+
+        results = [e for e in results if _keep_holes(e)]
 
     results.sort(key=_sort_key)
 
