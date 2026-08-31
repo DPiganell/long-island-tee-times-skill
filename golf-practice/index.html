@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>Golf Practice</title>
+  <meta name="description" content="Putting + chipping practice tracker. Works offline, all data stays on your device.">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f6f3">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0d0d0d">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Practice">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app" class="app">
+    <main id="screen" class="screen" aria-live="polite"></main>
+
+    <nav class="tabbar" aria-label="Main">
+      <button class="tab" id="tab-practice" data-tab="practice" aria-label="Practice">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 2.5v16.7a2.4 2.4 0 1 1-1.5-.4V2.5A.75.75 0 0 1 7 2.5Zm.8.9 8.9 3.2c.8.3.8 1.4 0 1.7l-8.9 3.2V3.4Z"/></svg>
+        <span>Practice</span>
+      </button>
+      <button class="tab" id="tab-history" data-tab="history" aria-label="History">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 1-8.6 6.3.9.9 0 0 1 1.7.6A7.2 7.2 0 1 0 12 4.8c-2 0-3.9.8-5.2 2.2h1.9a.9.9 0 0 1 0 1.8H4.5a.9.9 0 0 1-.9-.9V3.7a.9.9 0 0 1 1.8 0v1.5A9 9 0 0 1 12 3Zm0 3.6a.9.9 0 0 1 .9.9v4l2.8 1.7a.9.9 0 1 1-.9 1.5l-3.2-2a.9.9 0 0 1-.5-.8V7.5a.9.9 0 0 1 .9-.9Z"/></svg>
+        <span>History</span>
+      </button>
+      <button class="tab" id="tab-progress" data-tab="progress" aria-label="Progress">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4a1 1 0 0 1 1 1v13h14a1 1 0 1 1 0 2H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Zm15.7 3.7a1 1 0 0 1 0 1.4l-4.6 4.6a1 1 0 0 1-1.4 0l-2.3-2.3-3.2 3.2a1 1 0 0 1-1.4-1.4l3.9-3.9a1 1 0 0 1 1.4 0l2.3 2.3 3.9-3.9a1 1 0 0 1 1.4 0Z"/></svg>
+        <span>Progress</span>
+      </button>
+    </nav>
+
+    <div id="sheet-backdrop" class="sheet-backdrop" hidden></div>
+    <div id="sheet" class="sheet" role="alertdialog" aria-modal="true" hidden></div>
+    <div id="toast" class="toast" role="status" hidden></div>
+  </div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
