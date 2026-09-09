@@ -18,6 +18,7 @@ import re
 import ssl
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from urllib.error import HTTPError, URLError
@@ -1339,6 +1340,129 @@ def _sort_key(entry: dict) -> tuple:
 # Main
 # ---------------------------------------------------------------------------
 
+STRATEGY_DISPATCH = {
+    "foreup":         search_foreup,
+    "teeitup":        search_teeitup,
+    "chronogolf":     search_chronogolf,
+    "golfback":       search_golfback,
+    "clubcaddie_api": search_clubcaddie_api,
+    "clubcaddie":     search_playwright,
+    "clubcaddie_nav": search_clubcaddie_nav,
+    "link_only":      search_link_only,
+}
+
+
+def run_search(date_str: str, start_h: int, end_h: int, players: int,
+                course_filter: str | None) -> list[dict]:
+    """Run one pass across all matching courses and return sorted results."""
+
+    def matches(name: str) -> bool:
+        return course_filter is None or course_filter in name.lower()
+
+    # Dispatch each matching course to its strategy's search function.
+    # WebTrac courses share one login session — handled separately as a batch.
+    pending = [c for c in COURSES if matches(c["name"])]
+    webtrac_courses = [c for c in pending if c["strategy"] == "webtrac"]
+    other_courses   = [c for c in pending if c["strategy"] != "webtrac"]
+    results: list[dict] = []
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {}
+
+        # WebTrac batch — one task running all matching WebTrac courses in shared session
+        if webtrac_courses:
+            f = pool.submit(search_webtrac_batch, webtrac_courses,
+                            date_str, start_h, end_h, players)
+            futures[f] = "WebTrac batch"
+
+        # Per-course tasks for everything else
+        for course in other_courses:
+            fn = STRATEGY_DISPATCH.get(course["strategy"])
+            if not fn:
+                results.append(_error_entry(course["name"], course["strategy"],
+                                            f"unknown strategy '{course['strategy']}'"))
+                continue
+            f = pool.submit(fn, course, date_str, start_h, end_h, players)
+            futures[f] = course["name"]
+
+        for future in as_completed(futures):
+            try:
+                results.extend(future.result())
+            except Exception as e:
+                results.append(_error_entry(futures[future], "unknown", str(e)))
+
+    results.sort(key=_sort_key)
+
+    # Also surface the GolfNow area search URL as a convenience
+    if not course_filter:
+        golfnow_area_url = _golfnow_search_url(date_str, start_h, end_h, players)
+        results.append({
+            "time": "—",
+            "course": "All courses on GolfNow (area search)",
+            "holes": "18",
+            "price": "varies",
+            "available_spots": "?",
+            "source": "GolfNow",
+            "booking_url": golfnow_area_url,
+            "note": "Full GolfNow search for 11755 →",
+        })
+
+    return results
+
+
+def _bookable(entries: list[dict]) -> list[dict]:
+    """Filter down to entries that are real, bookable slots (not errors, not
+    no-availability sentinels, not the catch-all GolfNow footer link)."""
+    return [
+        e for e in entries
+        if e.get("time") != "—" and not e.get("error") and not e.get("no_availability")
+    ]
+
+
+def send_notification(title: str, message: str) -> None:
+    """Best-effort desktop notification. macOS uses osascript; elsewhere this
+    is a silent no-op beyond stdout, since the caller already prints JSON."""
+    if sys.platform == "darwin":
+        script = f'display notification {json.dumps(message)} with title {json.dumps(title)}'
+        try:
+            subprocess.run(["osascript", "-e", script], check=False,
+                           capture_output=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    print(f"[notify] {title}: {message}", file=sys.stderr)
+
+
+def watch_search(date_str: str, start_h: int, end_h: int, players: int,
+                  course_filter: str | None, interval: int, max_attempts: int) -> list[dict]:
+    """Poll run_search() until a bookable slot shows up in the window (or
+    max_attempts is exhausted), then fire a desktop notification."""
+    for attempt in range(1, max_attempts + 1):
+        results = run_search(date_str, start_h, end_h, players, course_filter)
+        found = _bookable(results)
+        if found:
+            best = found[0]
+            send_notification(
+                "Tee time found!",
+                f"{best['course']} at {best['time']} on {date_str} "
+                f"({best.get('price', '—')}) — {best.get('source', '')}",
+            )
+            return results
+        if attempt < max_attempts:
+            print(
+                f"[watch] attempt {attempt}/{max_attempts}: no openings yet, "
+                f"rechecking in {interval}s...",
+                file=sys.stderr,
+            )
+            time.sleep(interval)
+
+    send_notification(
+        "Still watching",
+        f"No tee times opened up for {date_str} in the requested window after "
+        f"{max_attempts} checks.",
+    )
+    return results
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Search tee times near Smithtown, NY")
     parser.add_argument("--date", required=True, help="Date in YYYY-MM-DD format")
@@ -1355,74 +1479,37 @@ def main() -> None:
         action="store_true",
         help="Deprecated no-op; auto-headless is now built into per-course strategies.",
     )
+    parser.add_argument(
+        "--notify",
+        action="store_true",
+        help="Send a desktop notification when a matching tee time is found. If "
+             "nothing is available yet, keeps polling (see --interval/--max-attempts) "
+             "instead of returning immediately.",
+    )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=300,
+        help="Seconds between re-checks in --notify watch mode (default: 300)",
+    )
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=48,
+        help="Max re-checks in --notify watch mode before giving up (default: 48, "
+             "i.e. ~4 hours at the default 300s interval)",
+    )
     args = parser.parse_args()
 
     start_h = _parse_time_24h(args.start)
     end_h = _parse_time_24h(args.end)
-
     course_filter = args.course.lower() if args.course else None
 
-    def matches(name: str) -> bool:
-        return course_filter is None or course_filter in name.lower()
-
-    # Dispatch each matching course to its strategy's search function.
-    # WebTrac courses share one login session — handled separately as a batch.
-    STRATEGY_DISPATCH = {
-        "foreup":         search_foreup,
-        "teeitup":        search_teeitup,
-        "chronogolf":     search_chronogolf,
-        "golfback":       search_golfback,
-        "clubcaddie_api": search_clubcaddie_api,
-        "clubcaddie":     search_playwright,
-        "clubcaddie_nav": search_clubcaddie_nav,
-        "link_only":      search_link_only,
-    }
-
-    pending = [c for c in COURSES if matches(c["name"])]
-    webtrac_courses = [c for c in pending if c["strategy"] == "webtrac"]
-    other_courses   = [c for c in pending if c["strategy"] != "webtrac"]
-    results: list[dict] = []
-
-    with ThreadPoolExecutor(max_workers=10) as pool:
-        futures = {}
-
-        # WebTrac batch — one task running all matching WebTrac courses in shared session
-        if webtrac_courses:
-            f = pool.submit(search_webtrac_batch, webtrac_courses,
-                            args.date, start_h, end_h, args.players)
-            futures[f] = "WebTrac batch"
-
-        # Per-course tasks for everything else
-        for course in other_courses:
-            fn = STRATEGY_DISPATCH.get(course["strategy"])
-            if not fn:
-                results.append(_error_entry(course["name"], course["strategy"],
-                                            f"unknown strategy '{course['strategy']}'"))
-                continue
-            f = pool.submit(fn, course, args.date, start_h, end_h, args.players)
-            futures[f] = course["name"]
-
-        for future in as_completed(futures):
-            try:
-                results.extend(future.result())
-            except Exception as e:
-                results.append(_error_entry(futures[future], "unknown", str(e)))
-
-    results.sort(key=_sort_key)
-
-    # Also surface the GolfNow area search URL as a convenience
-    if not course_filter:
-        golfnow_area_url = _golfnow_search_url(args.date, start_h, end_h, args.players)
-        results.append({
-            "time": "—",
-            "course": "All courses on GolfNow (area search)",
-            "holes": "18",
-            "price": "varies",
-            "available_spots": "?",
-            "source": "GolfNow",
-            "booking_url": golfnow_area_url,
-            "note": "Full GolfNow search for 11755 →",
-        })
+    if args.notify:
+        results = watch_search(args.date, start_h, end_h, args.players, course_filter,
+                                args.interval, args.max_attempts)
+    else:
+        results = run_search(args.date, start_h, end_h, args.players, course_filter)
 
     print(json.dumps(results, indent=2))
 

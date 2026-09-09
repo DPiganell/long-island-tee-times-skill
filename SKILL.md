@@ -1,7 +1,7 @@
 ---
 name: tee-times
 description: "Search and aggregate local golf tee times from public APIs (ForeUp, TeeItUp, Chronogolf) for courses near Smithtown, NY (11755). Covers Bethpage State Park, Sunken Meadow, Middle Island CC, Crab Meadow, Brentwood, Holbrook, Swan Lake, Smithtown Landing, Stonebridge, Spring Lake. Use when asking for available tee times, golf availability, or wanting to book a round. Trigger phrases: 'tee time', 'golf tomorrow', 'find golf', 'book a round', 'open tee times'."
-argument-hint: "[date] [time-range] [players] [--course NAME]"
+argument-hint: "[date] [time-range] [players] [--course NAME] [--notify]"
 allowed-tools:
   - Bash
   - Read
@@ -57,6 +57,14 @@ Resolve the user's natural-language input to concrete values.
 - "--course Crab Meadow" or "just Crab Meadow" → pass `--course "Crab Meadow"` to the script
 - "Bethpage" → matches all 5 Bethpage courses (Black, Red, Blue, Green, Yellow)
 
+**Notifications (optional):**
+- "notify me", "let me know when", "watch for", "alert me if one opens up" → pass `--notify`
+  to the script. If nothing is available yet in the window, the script polls in the
+  background instead of returning empty-handed, and fires a desktop notification the
+  moment a bookable slot appears (or once it gives up after `--max-attempts`).
+- "check every 10 minutes" / "keep trying for 2 hours" → map to `--interval` (seconds
+  between checks, default 300) and `--max-attempts` (default 48).
+
 ## Step 2: Run the Search Script
 
 ```bash
@@ -65,10 +73,16 @@ python3 ~/.claude/skills/tee-times/scripts/search.py \
   --start HH:MM \
   --end HH:MM \
   --players N \
-  [--course "COURSE NAME"]
+  [--course "COURSE NAME"] \
+  [--notify [--interval SECONDS] [--max-attempts N]]
 ```
 
 No `--headless` flag is needed — each course picks its own strategy automatically. Chronogolf courses spin up Playwright internally (~5–10s); the rest hit public APIs (~1s).
+
+With `--notify`, the script blocks until it finds a bookable slot or exhausts
+`--max-attempts` re-checks, sending a macOS notification (`osascript`) either way —
+tell the user up front that the command will keep running until then, since results
+won't print immediately if nothing is currently open.
 
 The script outputs a JSON array. Capture it.
 
@@ -126,4 +140,8 @@ Want me to search a different time, filter to one course (e.g. Bethpage), or che
 
 "find me a tee time this weekend morning"
 → Clarify: Saturday or Sunday? Then search that day 6am–12pm
+
+/tee-times tomorrow 3pm-6pm 1 --notify
+→ Searches tomorrow after 3pm for 1 player; if nothing's open yet, keeps
+  polling and sends a desktop notification once a slot appears
 </examples>
