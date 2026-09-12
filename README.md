@@ -36,7 +36,14 @@ Then in Claude Code:
 /tee-times Saturday morning 2
 /tee-times tomorrow afternoon 4 --course Bethpage
 /tee-times 2026-06-15 8am-11am 2
+/tee-times tomorrow 3pm-6pm 1 --notify
 ```
+
+Add `--notify` (or just say "notify me when one opens up") to have the search
+keep polling and send a desktop notification the moment a matching tee time
+becomes bookable, instead of returning immediately with no results. Tune the
+polling with `--interval SECONDS` (default 300) and `--max-attempts N`
+(default 48).
 
 ## Supported courses (35 across 6 strategies)
 
